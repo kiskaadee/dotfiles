@@ -1,0 +1,44 @@
+// -----------------------------------------------------
+// Custom Keybindings (Niri Port)
+// -----------------------------------------------------
+
+binds {
+    // === Core Application Launchers ===
+    Mod+Return hotkey-overlay-title="Alacritty Terminal" { spawn "alacritty"; }
+    Mod+B      hotkey-overlay-title="Firefox Browser"   { spawn "firefox"; }
+    Mod+O      hotkey-overlay-title="Obsidian Notes"    { spawn "flatpak" "run" "md.obsidian.Obsidian"; }
+
+    // === Active Window Management ===
+    // Force kill active window process via Niri IPC (JSON parsed)
+    Mod+Shift+Q hotkey-overlay-title="Force Kill Active Window" {
+        spawn "bash" "-c" "niri msg -j focused-window | jq -r '.pid // empty' | xargs -r kill -9";
+    }
+
+    // === Pixel-Based Window Resizing ===
+    // Niri strictly controls width via columns and height via windows
+    Mod+Alt+Right hotkey-overlay-title="Width +100px"  { set-column-width "+100"; }
+    Mod+Alt+Left  hotkey-overlay-title="Width -100px"  { set-column-width "-100"; }
+    Mod+Alt+Down  hotkey-overlay-title="Height +100px" { set-window-height "+100"; }
+    Mod+Alt+Up    hotkey-overlay-title="Height -100px" { set-window-height "-100"; }
+
+    // === Screenshot Utility (Niri Native Actions) ===
+    Mod+S          hotkey-overlay-title="Screenshot: Area (Interactive)" { screenshot; }
+    Mod+Shift+S    hotkey-overlay-title="Screenshot: Active Window"      { screenshot-window; }
+    Mod+Alt+S      hotkey-overlay-title="Screenshot: Full Screen"        { screenshot-screen; }
+    Mod+Ctrl+Alt+S hotkey-overlay-title="Screenshot: Full Screen"        { screenshot-screen; }
+
+    // === Color Picker ===
+    Mod+Shift+C hotkey-overlay-title="Color Picker (Eyedropper)" {
+        spawn "bash" "-c" "color=$(niri msg pick-color) && [ -n \"$color\" ] && echo -n \"$color\" | wl-copy && notify-send -a 'Niri' 'Color Picker' \"Copied $color to clipboard\"";
+    }
+
+    // === Dynamic Screen Sharing / Cast Targets ===
+    Mod+Alt+W hotkey-overlay-title="Cast: Target Focused Window"  { set-dynamic-cast-window; }
+    Mod+Alt+M hotkey-overlay-title="Cast: Target Focused Monitor" { set-dynamic-cast-monitor; }
+    Mod+Alt+C hotkey-overlay-title="Cast: Clear Target"          { clear-dynamic-cast-target; }
+
+    // === Config Management ===
+    Mod+Ctrl+Shift+R hotkey-overlay-title="Reload Niri Config" {
+        spawn "bash" "-c" "niri msg action load-config-file && notify-send -a 'Niri' 'Configuration' 'Niri config reloaded successfully'";
+    }
+}
