@@ -44,6 +44,34 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# Module Target Mapping
+# ------------------------------------------------------------------------------
+get_module_targets() {
+  local module="$1"
+  case "$module" in
+    alacritty)
+      echo "alacritty:${DOTFILES_DIR}/alacritty:${TARGET_BASE}/alacritty"
+      ;;
+    fastfetch)
+      echo "fastfetch:${DOTFILES_DIR}/fastfetch:${TARGET_BASE}/fastfetch"
+      ;;
+    git)
+      echo "git:${DOTFILES_DIR}/git:${TARGET_BASE}/git"
+      ;;
+    niri)
+      echo "niri/config.kdl:${DOTFILES_DIR}/niri/config.kdl:${TARGET_BASE}/niri/config.kdl"
+      echo "niri/custom.kdl:${DOTFILES_DIR}/niri/custom.kdl:${TARGET_BASE}/niri/custom.kdl"
+      ;;
+    nvim)
+      echo "nvim:${DOTFILES_DIR}/nvim:${TARGET_BASE}/nvim"
+      ;;
+    tmux)
+      echo "tmux:${DOTFILES_DIR}/tmux:${TARGET_BASE}/tmux"
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------------------
 resolve_link() {
@@ -116,7 +144,7 @@ validate_paths() {
   fi
 
   if [[ ! -e "$source" ]]; then
-    echo -e "${RED}Error: Source module directory missing: $source${NC}" >&2
+    echo -e "${RED}Error: Source configuration file/directory missing: $source${NC}" >&2
     exit 1
   fi
 }
@@ -138,12 +166,11 @@ ensure_backup_dir() {
 # ------------------------------------------------------------------------------
 # Core Actions
 # ------------------------------------------------------------------------------
-deploy_module() {
-  local module="$1"
-  local dry_run="$2"
-
-  local source="${DOTFILES_DIR}/${module}"
-  local target="${TARGET_BASE}/${module}"
+deploy_target() {
+  local label="$1"
+  local source="$2"
+  local target="$3"
+  local dry_run="$4"
 
   validate_paths "$source" "$target"
   local status
@@ -151,40 +178,41 @@ deploy_module() {
 
   case "$status" in
     linked)
-      echo -e "  ${GREEN}✓${NC} ${BOLD}${module}${NC}: already linked (${target} -> ${source})"
+      echo -e "  ${GREEN}✓${NC} ${BOLD}${label}${NC}: already linked (${target} -> ${source})"
       ;;
 
     missing)
       if [[ "$dry_run" == "1" ]]; then
-        echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${module}${NC}: would link ${target} -> ${source}"
+        echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${label}${NC}: would link ${target} -> ${source}"
       else
         mkdir -p "$(dirname "$target")"
         ln -s "$source" "$target"
-        echo -e "  ${GREEN}+${NC} ${BOLD}${module}${NC}: linked (${target} -> ${source})"
+        echo -e "  ${GREEN}+${NC} ${BOLD}${label}${NC}: linked (${target} -> ${source})"
       fi
       ;;
 
     foreign_symlink|directory|file|broken_symlink|other)
       if [[ "$dry_run" == "1" ]]; then
-        echo -e "  ${YELLOW}!${NC} [dry-run] ${BOLD}${module}${NC}: collision (${status}) at ${target}; would backup and link"
+        echo -e "  ${YELLOW}!${NC} [dry-run] ${BOLD}${label}${NC}: collision (${status}) at ${target}; would backup and link"
       else
         ensure_backup_dir
-        mv "$target" "${BACKUP_DIR}/${module}"
-        echo -e "  ${YELLOW}↳${NC} ${BOLD}${module}${NC}: backed up existing ${status} to ${BACKUP_DIR}/${module}"
+        local backup_dest="${BACKUP_DIR}/${label}"
+        mkdir -p "$(dirname "$backup_dest")"
+        mv "$target" "$backup_dest"
+        echo -e "  ${YELLOW}↳${NC} ${BOLD}${label}${NC}: backed up existing ${status} to ${backup_dest}"
         mkdir -p "$(dirname "$target")"
         ln -s "$source" "$target"
-        echo -e "  ${GREEN}+${NC} ${BOLD}${module}${NC}: linked (${target} -> ${source})"
+        echo -e "  ${GREEN}+${NC} ${BOLD}${label}${NC}: linked (${target} -> ${source})"
       fi
       ;;
   esac
 }
 
-unlink_module() {
-  local module="$1"
-  local dry_run="$2"
-
-  local source="${DOTFILES_DIR}/${module}"
-  local target="${TARGET_BASE}/${module}"
+unlink_target() {
+  local label="$1"
+  local source="$2"
+  local target="$3"
+  local dry_run="$4"
 
   validate_paths "$source" "$target"
   local status
@@ -193,14 +221,14 @@ unlink_module() {
   case "$status" in
     linked)
       if [[ "$dry_run" == "1" ]]; then
-        echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${module}${NC}: would remove symlink ${target}"
+        echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${label}${NC}: would remove symlink ${target}"
       else
         rm "$target"
-        echo -e "  ${RED}-${NC} ${BOLD}${module}${NC}: unlinked ${target}"
+        echo -e "  ${RED}-${NC} ${BOLD}${label}${NC}: unlinked ${target}"
       fi
       ;;
     missing)
-      echo -e "  ${BLUE}·${NC} ${BOLD}${module}${NC}: target does not exist (skip)"
+      echo -e "  ${BLUE}·${NC} ${BOLD}${label}${NC}: target does not exist (skip)"
       ;;
     broken_symlink)
       if [[ -L "$target" ]]; then
@@ -208,41 +236,41 @@ unlink_module() {
         target_dest="$(resolve_link "$target")"
         if [[ "$target_dest" == "$source" ]]; then
           if [[ "$dry_run" == "1" ]]; then
-            echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${module}${NC}: would remove broken repo symlink ${target}"
+            echo -e "  ${CYAN}○${NC} [dry-run] ${BOLD}${label}${NC}: would remove broken repo symlink ${target}"
           else
             rm "$target"
-            echo -e "  ${RED}-${NC} ${BOLD}${module}${NC}: removed broken symlink ${target}"
+            echo -e "  ${RED}-${NC} ${BOLD}${label}${NC}: removed broken symlink ${target}"
           fi
           return
         fi
       fi
-      echo -e "  ${YELLOW}!${NC} ${BOLD}${module}${NC}: target is ${status} (not owned by dotfiles, skip)"
+      echo -e "  ${YELLOW}!${NC} ${BOLD}${label}${NC}: target is ${status} (not owned by dotfiles, skip)"
       ;;
     *)
-      echo -e "  ${YELLOW}!${NC} ${BOLD}${module}${NC}: target is ${status} (not owned by dotfiles, skip)"
+      echo -e "  ${YELLOW}!${NC} ${BOLD}${label}${NC}: target is ${status} (not owned by dotfiles, skip)"
       ;;
   esac
 }
 
 cmd_status() {
   local -a target_modules=("${@}")
-  printf "${BOLD}%-14s %-36s %-16s${NC}\n" "MODULE" "TARGET" "STATUS"
-  printf -- '--------------------------------------------------------------------\n'
+  printf "${BOLD}%-18s %-40s %-16s${NC}\n" "TARGET" "LOCATION" "STATUS"
+  printf -- '--------------------------------------------------------------------------------\n'
   for mod in "${target_modules[@]}"; do
-    local src="${DOTFILES_DIR}/${mod}"
-    local tgt="${TARGET_BASE}/${mod}"
-    local st
-    st="$(get_status "$src" "$tgt")"
-    local color="$NC"
-    case "$st" in
-      linked)          color="$GREEN" ;;
-      missing)         color="$BLUE" ;;
-      foreign_symlink) color="$YELLOW" ;;
-      file|directory)  color="$YELLOW" ;;
-      broken_symlink)  color="$RED" ;;
-    esac
-    local display_tgt="${tgt/#$HOME/~}"
-    printf "%-14s %-36s ${color}%-16s${NC}\n" "$mod" "$display_tgt" "$st"
+    while IFS=: read -r label src tgt; do
+      local st
+      st="$(get_status "$src" "$tgt")"
+      local color="$NC"
+      case "$st" in
+        linked)          color="$GREEN" ;;
+        missing)         color="$BLUE" ;;
+        foreign_symlink) color="$YELLOW" ;;
+        file|directory)  color="$YELLOW" ;;
+        broken_symlink)  color="$RED" ;;
+      esac
+      local display_tgt="${tgt/#$HOME/~}"
+      printf "%-18s %-40s ${color}%-16s${NC}\n" "$label" "$display_tgt" "$st"
+    done < <(get_module_targets "$mod")
   done
 }
 
@@ -250,13 +278,13 @@ cmd_check() {
   local -a target_modules=("${@}")
   local failures=0
   for mod in "${target_modules[@]}"; do
-    local src="${DOTFILES_DIR}/${mod}"
-    local tgt="${TARGET_BASE}/${mod}"
-    local st
-    st="$(get_status "$src" "$tgt")"
-    if [[ "$st" != "linked" ]]; then
-      failures=$((failures + 1))
-    fi
+    while IFS=: read -r label src tgt; do
+      local st
+      st="$(get_status "$src" "$tgt")"
+      if [[ "$st" != "linked" ]]; then
+        failures=$((failures + 1))
+      fi
+    done < <(get_module_targets "$mod")
   done
 
   if [[ "$failures" -eq 0 ]]; then
@@ -434,14 +462,18 @@ main() {
     unlink)
       echo -e "${BOLD}Unlinking Dotfiles...${NC}"
       for mod in "${requested_modules[@]}"; do
-        unlink_module "$mod" "$dry_run"
+        while IFS=: read -r label src tgt; do
+          unlink_target "$label" "$src" "$tgt" "$dry_run"
+        done < <(get_module_targets "$mod")
       done
       echo -e "${BOLD}Done.${NC}"
       ;;
     deploy)
       echo -e "${BOLD}Deploying Dotfiles...${NC}"
       for mod in "${requested_modules[@]}"; do
-        deploy_module "$mod" "$dry_run"
+        while IFS=: read -r label src tgt; do
+          deploy_target "$label" "$src" "$tgt" "$dry_run"
+        done < <(get_module_targets "$mod")
       done
       echo -e "${BOLD}Deployment complete.${NC}"
       ;;
