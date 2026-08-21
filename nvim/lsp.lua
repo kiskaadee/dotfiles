@@ -36,6 +36,14 @@ if vim.lsp.config then
   -- Markdown LSP: marksman
   vim.lsp.config('marksman', {})
   vim.lsp.enable('marksman')
+
+  -- KDL LSP: kdl-lsp (KDL Language Server for Niri configs)
+  vim.lsp.config('kdl_lsp', {
+    cmd = { 'kdl-lsp' },
+    filetypes = { 'kdl' },
+    root_markers = { '.git' },
+  })
+  vim.lsp.enable('kdl_lsp')
 end
 
 
