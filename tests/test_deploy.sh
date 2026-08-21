@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# test_deploy.sh - Automated Regression Test Suite for deploy.sh
+# ==============================================================================
+# Runs tests in an isolated sandbox to verify idempotence, backup preservation,
+# repo safety, selective deployment, and safe unlinking invariants.
+# ==============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+DOTFILES_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+DEPLOY_BIN="${DOTFILES_DIR}/deploy.sh"
+
+# Setup isolated temporary sandbox
+SANDBOX_DIR="$(mktemp -d /tmp/dotfiles_sandbox_XXXXXX)"
+trap 'rm -rf "$SANDBOX_DIR"' EXIT
+
+export HOME="${SANDBOX_DIR}/home"
+export XDG_CONFIG_HOME="${HOME}/.config"
+mkdir -p "$HOME"
+
+PASSED_TESTS=0
+TOTAL_TESTS=0
+
+pass() {
+  PASSED_TESTS=$((PASSED_TESTS + 1))
+  echo -e "  \033[0;32m✓\033[0m $1"
+}
+
+fail() {
+  echo -e "  \033[0;31m✗\033[0m $1" >&2
+  exit 1
+}
+
+run_test() {
+  TOTAL_TESTS=$((TOTAL_TESTS + 1))
+  echo -e "\n\033[1m[Test $TOTAL_TESTS]\033[0m $1"
+}
+
+echo "=============================================================================="
+echo "Running Dotfiles Deployment Regression Tests"
+echo "Sandbox: $SANDBOX_DIR"
+echo "=============================================================================="
+
+# ------------------------------------------------------------------------------
+# Test 1: Dry-Run Safety
+# ------------------------------------------------------------------------------
+run_test "Dry-run makes zero filesystem mutations"
+"$DEPLOY_BIN" --dry-run >/dev/null
+if [[ -d "$XDG_CONFIG_HOME" ]]; then
+  fail "Dry-run created XDG_CONFIG_HOME directory"
+else
+  pass "Dry-run performed zero filesystem mutations"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 2: Fresh Deployment & Symlink Validity
+# ------------------------------------------------------------------------------
+run_test "Fresh deployment creates valid symlinks for all modules"
+"$DEPLOY_BIN" >/dev/null
+
+for mod in alacritty fastfetch git niri nvim tmux; do
+  tgt="${XDG_CONFIG_HOME}/${mod}"
+  src="${DOTFILES_DIR}/${mod}"
+  if [[ ! -L "$tgt" ]]; then
+    fail "Target $tgt is not a symlink"
+  fi
+  link_dest="$(readlink "$tgt")"
+  if [[ "$link_dest" != "$src" ]]; then
+    fail "Target $tgt points to '$link_dest', expected '$src'"
+  fi
+done
+pass "All 6 modules correctly symlinked to repository"
+
+if "$DEPLOY_BIN" --check; then
+  pass "--check exits 0 on healthy linked state"
+else
+  fail "--check failed on healthy linked state"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 3: No-Op Idempotence
+# ------------------------------------------------------------------------------
+run_test "Deployment is idempotent (re-running does not alter state or make backups)"
+output="$("$DEPLOY_BIN")"
+if echo "$output" | grep -q "backed up"; then
+  fail "Idempotent run created redundant backups"
+fi
+
+if [[ -d "${HOME}/.dotfiles_backup" ]]; then
+  fail "Backup directory was created during a clean idempotent run"
+fi
+pass "Second run made zero redundant modifications and created no backups"
+
+# ------------------------------------------------------------------------------
+# Test 4: Real Directory Collision & Safe Backup
+# ------------------------------------------------------------------------------
+run_test "Colliding real directory is safely archived and replaced by symlink"
+# Remove nvim symlink and create a real directory with content
+rm "${XDG_CONFIG_HOME}/nvim"
+mkdir -p "${XDG_CONFIG_HOME}/nvim"
+echo "custom user state" > "${XDG_CONFIG_HOME}/nvim/custom.txt"
+
+"$DEPLOY_BIN" >/dev/null
+
+if [[ ! -L "${XDG_CONFIG_HOME}/nvim" ]]; then
+  fail "Colliding nvim directory was not replaced with symlink"
+fi
+
+backup_file="$(find "${HOME}/.dotfiles_backup" -type f -name "custom.txt" | head -n 1)"
+if [[ -z "$backup_file" || ! -f "$backup_file" ]]; then
+  fail "Colliding nvim content was not found in backup directory"
+fi
+
+backup_content="$(cat "$backup_file")"
+if [[ "$backup_content" != "custom user state" ]]; then
+  fail "Backup content was corrupted"
+fi
+pass "Real directory collision was archived with data integrity preserved"
+
+# ------------------------------------------------------------------------------
+# Test 5: Historical Backup Preservation
+# ------------------------------------------------------------------------------
+run_test "Subsequent deployments preserve prior backups (historical evidence)"
+initial_backup_count="$(find "${HOME}/.dotfiles_backup" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+# Create a collision in another module
+rm "${XDG_CONFIG_HOME}/tmux"
+mkdir -p "${XDG_CONFIG_HOME}/tmux"
+echo "custom tmux state" > "${XDG_CONFIG_HOME}/tmux/session.txt"
+
+sleep 1
+"$DEPLOY_BIN" >/dev/null
+
+new_backup_count="$(find "${HOME}/.dotfiles_backup" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+if [[ "$new_backup_count" -le "$initial_backup_count" ]]; then
+  fail "New backup was not recorded in a separate timestamped directory"
+fi
+
+# Verify initial nvim backup still exists intact
+if [[ ! -f "$backup_file" ]]; then
+  fail "Prior backup was deleted or overwritten"
+fi
+pass "Historical backups are preserved across distinct deployment runs"
+
+# ------------------------------------------------------------------------------
+# Test 6: Foreign Symlink Collision Handling
+# ------------------------------------------------------------------------------
+run_test "Foreign symlink is treated as a collision and backed up"
+foreign_dir="${SANDBOX_DIR}/foreign_alacritty"
+mkdir -p "$foreign_dir"
+echo "foreign alacritty" > "${foreign_dir}/alacritty.toml"
+
+rm "${XDG_CONFIG_HOME}/alacritty"
+ln -s "$foreign_dir" "${XDG_CONFIG_HOME}/alacritty"
+
+"$DEPLOY_BIN" >/dev/null
+
+if [[ "$(readlink "${XDG_CONFIG_HOME}/alacritty")" != "${DOTFILES_DIR}/alacritty" ]]; then
+  fail "Foreign symlink was not replaced with repository symlink"
+fi
+
+# Verify backup contains the foreign symlink
+found_foreign_backup=0
+for b in "${HOME}/.dotfiles_backup"/*/alacritty; do
+  if [[ -L "$b" && "$(readlink "$b")" == "$foreign_dir" ]]; then
+    found_foreign_backup=1
+    break
+  fi
+done
+
+if [[ "$found_foreign_backup" -ne 1 ]]; then
+  fail "Foreign symlink was not preserved in backup directory"
+fi
+pass "Foreign symlink was backed up and replaced"
+
+# ------------------------------------------------------------------------------
+# Test 7: Selective Module Deployment
+# ------------------------------------------------------------------------------
+run_test "Selective module deployment links only specified modules"
+rm -rf "$XDG_CONFIG_HOME"
+
+"$DEPLOY_BIN" fastfetch git >/dev/null
+
+if [[ ! -L "${XDG_CONFIG_HOME}/fastfetch" || ! -L "${XDG_CONFIG_HOME}/git" ]]; then
+  fail "Requested modules were not linked"
+fi
+
+for unreq in alacritty niri nvim tmux; do
+  if [[ -e "${XDG_CONFIG_HOME}/${unreq}" || -L "${XDG_CONFIG_HOME}/${unreq}" ]]; then
+    fail "Unrequested module $unreq was linked unexpectedly"
+  fi
+done
+
+if "$DEPLOY_BIN" --check fastfetch git; then
+  pass "Selective --check passes for deployed subset"
+else
+  fail "Selective --check failed unexpectedly"
+fi
+
+if "$DEPLOY_BIN" --check 2>/dev/null; then
+  fail "--check on all modules should fail when only subset is deployed"
+else
+  pass "--check properly failed when modules were missing"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 8: Safe Unlinking (Repo-Owned Symlinks Only)
+# ------------------------------------------------------------------------------
+run_test "Unlink removes only repo-owned symlinks and ignores non-repo files/symlinks"
+"$DEPLOY_BIN" >/dev/null
+
+# Create unmanaged file and foreign symlink
+echo "important document" > "${XDG_CONFIG_HOME}/unmanaged.txt"
+ln -s "${SANDBOX_DIR}" "${XDG_CONFIG_HOME}/foreign_app"
+
+"$DEPLOY_BIN" --unlink >/dev/null
+
+for mod in alacritty fastfetch git niri nvim tmux; do
+  if [[ -e "${XDG_CONFIG_HOME}/${mod}" || -L "${XDG_CONFIG_HOME}/${mod}" ]]; then
+    fail "Managed module $mod was not unlinked"
+  fi
+done
+
+if [[ ! -f "${XDG_CONFIG_HOME}/unmanaged.txt" ]]; then
+  fail "Unlink removed non-managed file"
+fi
+
+if [[ ! -L "${XDG_CONFIG_HOME}/foreign_app" ]]; then
+  fail "Unlink removed foreign symlink"
+fi
+pass "Unlink cleanly removed only repository-managed symlinks"
+
+# ------------------------------------------------------------------------------
+# Test 9: Repository Safety & Path Traversal Rejection
+# ------------------------------------------------------------------------------
+run_test "Deployment engine rejects targets pointing inside repository"
+if XDG_CONFIG_HOME="${DOTFILES_DIR}" "$DEPLOY_BIN" 2>/dev/null; then
+  fail "Deployer accepted target path inside repository"
+else
+  pass "Deployer correctly rejected target path inside repository"
+fi
+
+# ------------------------------------------------------------------------------
+# Test 10: Status Output & CI Check Verification
+# ------------------------------------------------------------------------------
+run_test "Status table reports correct states"
+# Leave git missing, nvim linked, fastfetch as real directory
+mkdir -p "$XDG_CONFIG_HOME"
+ln -s "${DOTFILES_DIR}/nvim" "${XDG_CONFIG_HOME}/nvim"
+mkdir -p "${XDG_CONFIG_HOME}/fastfetch"
+
+status_out="$("$DEPLOY_BIN" --status)"
+if echo "$status_out" | grep -q "nvim.*linked" && \
+   echo "$status_out" | grep -q "git.*missing" && \
+   echo "$status_out" | grep -q "fastfetch.*directory"; then
+  pass "Status command accurately identified linked, missing, and directory states"
+else
+  fail "Status output did not match expected states: \n$status_out"
+fi
+
+# ------------------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------------------
+echo -e "\n=============================================================================="
+echo -e "\033[1;32mAll $PASSED_TESTS / $TOTAL_TESTS regression tests passed successfully!\033[0m"
+echo "=============================================================================="
