@@ -201,6 +201,20 @@ fi
 pass "Foreign symlink was backed up and replaced"
 
 # ------------------------------------------------------------------------------
+# Test 6b: Broken Relative Symlink Resolution & Collision Handling
+# ------------------------------------------------------------------------------
+run_test "Broken relative symlink with nonexistent parent directory does not abort deployer"
+rm "${XDG_CONFIG_HOME}/fastfetch"
+ln -s "nonexistent_parent_dir/missing_child" "${XDG_CONFIG_HOME}/fastfetch"
+
+"$DEPLOY_BIN" >/dev/null
+
+if [[ "$(readlink "${XDG_CONFIG_HOME}/fastfetch")" != "${DOTFILES_DIR}/fastfetch" ]]; then
+  fail "Broken relative symlink was not replaced with repository symlink"
+fi
+pass "Deployer safely handled broken relative symlink without crashing under set -euo pipefail"
+
+# ------------------------------------------------------------------------------
 # Test 7: Selective Module Deployment
 # ------------------------------------------------------------------------------
 run_test "Selective module deployment links only specified modules"

@@ -77,12 +77,23 @@ get_module_targets() {
 resolve_link() {
   local link="$1"
   local dest
-  dest="$(readlink "$link")"
+  dest="$(readlink "$link" 2>/dev/null || true)"
+  if [[ -z "$dest" ]]; then
+    echo "$link"
+    return
+  fi
+
   if [[ "$dest" != /* ]]; then
-    dest="$(cd "$(dirname "$link")" && cd "$(dirname "$dest")" && pwd -P)/$(basename "$dest")"
+    local link_dir
+    link_dir="$(cd "$(dirname "$link")" 2>/dev/null && pwd -P || echo "$(dirname "$link")")"
+    if [[ -d "${link_dir}/$(dirname "$dest")" ]]; then
+      dest="$(cd "${link_dir}/$(dirname "$dest")" 2>/dev/null && pwd -P)/$(basename "$dest")"
+    else
+      dest="${link_dir}/${dest}"
+    fi
   else
     if [[ -d "$dest" ]]; then
-      dest="$(cd "$dest" && pwd -P)"
+      dest="$(cd "$dest" 2>/dev/null && pwd -P || echo "$dest")"
     fi
   fi
   echo "$dest"
